@@ -49,15 +49,15 @@ struct RecordReplayTy {
 
 private:
   // Memory pointers for recording, replaying memory.
-  void *MemoryStart;
-  void *MemoryPtr;
-  size_t MemorySize;
-  size_t TotalSize;
-  GenericDeviceTy *Device;
+  void *MemoryStart = nullptr;
+  void *MemoryPtr = nullptr;
+  size_t MemorySize = 0;
+  size_t TotalSize = 0;
+  GenericDeviceTy *Device = nullptr;
   std::mutex AllocationLock;
 
-  RRStatusTy Status;
-  bool ReplaySaveOutput;
+  RRStatusTy Status = RRDeactivated;
+  bool ReplaySaveOutput = false;
   bool UsedVAMap = false;
   uintptr_t MemoryOffset = 0;
 
@@ -189,9 +189,6 @@ public:
   }
   void setStatus(RRStatusTy Status) { this->Status = Status; }
   bool isSaveOutputEnabled() const { return ReplaySaveOutput; }
-
-  RecordReplayTy()
-      : Status(RRStatusTy::RRDeactivated), ReplaySaveOutput(false) {}
 
   void saveImage(const char *Name, const DeviceImageTy &Image) {
     SmallString<128> ImageName = {Name, ".image"};
@@ -352,8 +349,9 @@ public:
       Device->free(MemoryStart);
     }
   }
+};
 
-} RecordReplay;
+static RecordReplayTy RecordReplay;
 
 // Extract the mapping of host function pointers to device function pointers
 // from the entry table. Functions marked as 'indirect' in OpenMP will have
@@ -438,6 +436,7 @@ Error GenericKernelTy::init(GenericDeviceTy &GenericDevice,
        Name, ErrStr.data());
     assert(KernelEnvironment.Configuration.ReductionDataSize == 0 &&
            "Default initialization failed.");
+    IsBareKernel = true;
   }
 
   // Max = Config.Max > 0 ? min(Config.Max, Device.Max) : Device.Max;
@@ -596,6 +595,10 @@ uint32_t GenericKernelTy::getNumThreads(GenericDeviceTy &GenericDevice,
                                         uint32_t ThreadLimitClause[3]) const {
   assert(ThreadLimitClause[1] == 0 && ThreadLimitClause[2] == 0 &&
          "Multi dimensional launch not supported yet.");
+
+  if (IsBareKernel && ThreadLimitClause[0] > 0)
+    return ThreadLimitClause[0];
+
   if (ThreadLimitClause[0] > 0 && isGenericMode())
     ThreadLimitClause[0] += GenericDevice.getWarpSize();
 
@@ -611,6 +614,9 @@ uint64_t GenericKernelTy::getNumBlocks(GenericDeviceTy &GenericDevice,
                                        bool IsNumThreadsFromUser) const {
   assert(NumTeamsClause[1] == 0 && NumTeamsClause[2] == 0 &&
          "Multi dimensional launch not supported yet.");
+
+  if (IsBareKernel && NumTeamsClause[0] > 0)
+    return NumTeamsClause[0];
 
   if (NumTeamsClause[0] > 0) {
     // TODO: We need to honor any value and consequently allow more than the
@@ -789,8 +795,10 @@ Error GenericDeviceTy::deinit(GenericPluginTy &Plugin) {
                              sizeof(DeviceMemoryPoolTrackingTy),
                              &ImageDeviceMemoryPoolTracking);
       if (auto Err =
-              GHandler.readGlobalFromDevice(*this, *Image, TrackerGlobal))
-        return Err;
+              GHandler.readGlobalFromDevice(*this, *Image, TrackerGlobal)) {
+        consumeError(std::move(Err));
+        continue;
+      }
       DeviceMemoryPoolTracking.combine(ImageDeviceMemoryPoolTracking);
     }
 
@@ -971,10 +979,16 @@ Error GenericDeviceTy::setupDeviceMemoryPool(GenericPluginTy &Plugin,
   }
 
   // Create the metainfo of the device environment global.
+  GenericGlobalHandlerTy &GHandler = Plugin.getGlobalHandler();
+  if (!GHandler.isSymbolInImage(*this, Image,
+                                "__omp_rtl_device_memory_pool_tracker")) {
+    DP("Skip the memory pool as there is no tracker symbol in the image.");
+    return Error::success();
+  }
+
   GlobalTy TrackerGlobal("__omp_rtl_device_memory_pool_tracker",
                          sizeof(DeviceMemoryPoolTrackingTy),
                          &DeviceMemoryPoolTracking);
-  GenericGlobalHandlerTy &GHandler = Plugin.getGlobalHandler();
   if (auto Err = GHandler.writeGlobalToDevice(*this, Image, TrackerGlobal))
     return Err;
 
@@ -1704,7 +1718,7 @@ int32_t __tgt_rtl_number_of_devices() { return Plugin::get().getNumDevices(); }
 
 int64_t __tgt_rtl_init_requires(int64_t RequiresFlags) {
   Plugin::get().setRequiresFlag(RequiresFlags);
-  return RequiresFlags;
+  return OFFLOAD_SUCCESS;
 }
 
 int32_t __tgt_rtl_is_data_exchangable(int32_t SrcDeviceId,

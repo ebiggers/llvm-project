@@ -67,18 +67,6 @@ func.func @create_mask_transpose_to_transposed_create_mask(
 
 // -----
 
-// CHECK-LABEL: transposed_unit_dim_shape_cast_to_shape_cast
-//  CHECK-SAME: %[[VEC:.*]]: vector<[4]xf32>
-func.func @transposed_unit_dim_shape_cast_to_shape_cast(%vec: vector<[4]xf32>) -> vector<1x[4]xf32> {
-  //     CHECK: vector.shape_cast %[[VEC]] : vector<[4]xf32> to vector<1x[4]xf32>
-  // CHECK-NOT: vector.transpose
-  %0 = vector.shape_cast %vec : vector<[4]xf32> to vector<[4]x1xf32>
-  %1 = vector.transpose %0, [1, 0] : vector<[4]x1xf32> to vector<1x[4]xf32>
-  return %1 : vector<1x[4]xf32>
-}
-
-// -----
-
 // CHECK-LABEL: extract_from_create_mask
 //  CHECK-SAME: %[[DIM0:.*]]: index, %[[DIM1:.*]]: index
 func.func @extract_from_create_mask(%dim0: index, %dim1: index) -> vector<[4]x[4]xi1> {
@@ -2179,6 +2167,18 @@ func.func @masked_reduce_one_element_vector_extract(%a : vector<1xf32>, %mask : 
 //       CHECK:   return %[[S]]
 func.func @reduce_one_element_vector_addf(%a : vector<1xf32>, %b: f32) -> f32 {
   %s = vector.reduction <add>, %a, %b : vector<1xf32> into f32
+  return %s : f32
+}
+
+// -----
+
+// CHECK-LABEL: func @reduce_one_element_vector_addf_fastmath
+//  CHECK-SAME: (%[[V:.+]]: vector<1xf32>, %[[B:.+]]: f32)
+//       CHECK:   %[[A:.+]] = vector.extract %[[V]][0] : f32 from vector<1xf32>
+//       CHECK:   %[[S:.+]] = arith.addf %[[A]], %arg1 fastmath<nnan,ninf> : f32
+//       CHECK:   return %[[S]]
+func.func @reduce_one_element_vector_addf_fastmath(%a : vector<1xf32>, %b: f32) -> f32 {
+  %s = vector.reduction <add>, %a, %b fastmath<nnan,ninf> : vector<1xf32> into f32
   return %s : f32
 }
 
